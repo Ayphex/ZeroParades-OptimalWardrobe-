@@ -209,13 +209,13 @@ namespace ZeroParadesOptimalWardrobe
             IncludeTools = Config.Bind("1. Core Modules", "IncludeHeldTools", true, "Includes held utility tools (flashlights, prybars) in conditioning.");
 
             // Category 2: Balance & Math Tuning
-            RcRatio = Config.Bind("2. Balance & Math Tuning", "ConditioningRatio_Rc", 0.75f, new ConfigDescription("Multiplier (0.0 to 1.0).", new AcceptableValueRange<float>(0.0f, 1.0f)));
-            CkBonusCap = Config.Bind("2. Balance & Math Tuning", "StashAssistBonusCap_Ck", 5, new ConfigDescription("Max bonus cap (+1 to +10).", new AcceptableValueRange<int>(1, 10)));
+            RcRatio = Config.Bind("2. Balance & Math Tuning", "ConditioningRatio_Rc", 1.0f, new ConfigDescription("Multiplier (0.0 to 1.0).", new AcceptableValueRange<float>(0.0f, 1.0f)));
+            CkBonusCap = Config.Bind("2. Balance & Math Tuning", "StashAssistBonusCap_Ck", 6, new ConfigDescription("Max bonus cap (+1 to +10).", new AcceptableValueRange<int>(1, 10)));
             MaxDeltaCap = Config.Bind("2. Balance & Math Tuning", "MaxDeltaCap", 6, new ConfigDescription("Max stat delta increase ceiling.", new AcceptableValueRange<int>(1, 10)));
-            BaseStatCap = Config.Bind("2. Balance & Math Tuning", "BaseStatCap", 4, new ConfigDescription("Base stat soft-cap before diminishing returns apply.", new AcceptableValueRange<int>(1, 10)));
-            s_DiminishingReturnsEnabled = Config.Bind("2. Balance & Math Tuning", "DiminishingReturnsEnabled", true, "Applies progressive falloff past threshold.");
-            DiminishingThreshold = Config.Bind("2. Balance & Math Tuning", "DiminishingThreshold", 2, new ConfigDescription("Bonus threshold where diminishing returns begin.", new AcceptableValueRange<int>(1, 6)));
-            DiminishingRatio = Config.Bind("2. Balance & Math Tuning", "DiminishingRatio", 0.50f, new ConfigDescription("Multiplier for bonus points exceeding threshold.", new AcceptableValueRange<float>(0.1f, 0.9f)));
+            BaseStatCap = Config.Bind("2. Balance & Math Tuning", "BaseStatCap", 6, new ConfigDescription("Base stat soft-cap before diminishing returns apply.", new AcceptableValueRange<int>(1, 10)));
+            s_DiminishingReturnsEnabled = Config.Bind("2. Balance & Math Tuning", "DiminishingReturnsEnabled", false, "Applies progressive falloff past threshold.");
+            DiminishingThreshold = Config.Bind("2. Balance & Math Tuning", "DiminishingThreshold", 3, new ConfigDescription("Bonus threshold where diminishing returns begin.", new AcceptableValueRange<int>(1, 6)));
+            DiminishingRatio = Config.Bind("2. Balance & Math Tuning", "DiminishingRatio", 0.75f, new ConfigDescription("Multiplier for bonus points exceeding threshold.", new AcceptableValueRange<float>(0.1f, 0.9f)));
 
             // Category 3: Roleplay Stat Suppression
             for (int i = 0; i < 15; i++)
