@@ -1226,7 +1226,9 @@ switch (lower)
                     foreach (var k in deltaRawBySkill.Keys) allEvaluatedSkills.Add(k);
 
                     bool diminishingReturns = Plugin.Instance == null || Plugin.Instance.DiminishingReturnsEnabled.Value;
-                    float bonusCap = (Plugin.Instance != null && Plugin.Instance.StashAssistBonusCap != null) ? Plugin.Instance.StashAssistBonusCap.Value : 5f;
+                    float bonusCap = (Plugin.Instance != null && Plugin.Instance.StashAssistBonusCap != null) ? Plugin.Instance.StashAssistBonusCap.Value : 6f;
+                    float dimThreshold = Plugin.DiminishingThreshold != null ? Plugin.DiminishingThreshold.Value : 3f;
+                    float dimRatio = Plugin.DiminishingRatio != null ? Plugin.DiminishingRatio.Value : 0.75f;
 
                     foreach (var sk in allEvaluatedSkills)
                     {
@@ -1238,36 +1240,17 @@ switch (lower)
 
                         int rawDelta = deltaRawBySkill.TryGetValue(sk, out int rd) ? rd : 0;
 
-                        int pk = 1;
-                        try
-                        {
-                            skillMgr.GetSkillInfo(NormalizeSkillId(sk), out int sBase, out int sRating, out int fBase, out int maxR, out int modsVal, out int penVal, (int)SkillInfoFlags.None);
-                            pk = Math.Max(1, sRating > 0 ? sRating : (fBase + sBase));
-                        }
-                        catch
-                        {
-                            try
-                            {
-                                if (skillMgr.TryGetSkillValue(NormalizeSkillId(sk), out int sVal, (int)SkillInfoFlags.None, false))
-                                {
-                                    pk = Math.Max(1, sVal);
-                                }
-                            }
-                            catch { }
-                        }
-
-                        // Conditioning Cap: Ck = min(bonusCap, max(1.0, Pk * Rc))
-                        float ck = Math.Min(bonusCap, Math.Max(1.0f, pk * rc));
-
-                        // Scaled Delta: Diminishing returns square-root compression
+                        // Scaled Delta: Apply Configurable Diminishing Returns (Linear Falloff)
                         float effectiveRaw = rawDelta;
-                        if (diminishingReturns && effectiveRaw > 3.0f)
+                        if (diminishingReturns && effectiveRaw > dimThreshold)
                         {
-                            effectiveRaw = 3.0f + Mathf.Sqrt(effectiveRaw - 3.0f);
+                            effectiveRaw = dimThreshold + ((effectiveRaw - dimThreshold) * dimRatio);
                         }
+                        
                         float scaledDelta = effectiveRaw * rc;
 
-                        int finalDelta = rawDelta > 0 ? Mathf.RoundToInt(Mathf.Clamp(scaledDelta, 0.0f, ck)) : 0;
+                        // Cap the final value strictly by the configured StashAssistBonusCap (Ck)
+                        int finalDelta = rawDelta > 0 ? Mathf.RoundToInt(Mathf.Clamp(scaledDelta, 0.0f, bonusCap)) : 0;
 
                         _precomputedDeltas[sk] = finalDelta;
                     }
