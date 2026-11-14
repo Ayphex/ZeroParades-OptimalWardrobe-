@@ -334,18 +334,32 @@ switch (lower)
 
         public static C4InventoryManager GetInventoryManager()
         {
-            if (_cachedInvMgr == null || _cachedInvMgr.Pointer == IntPtr.Zero || _cachedInvMgr.WasCollected)
+            try
             {
-                _cachedInvMgr = UnityEngine.Object.FindObjectOfType<C4InventoryManager>();
+                if (_cachedInvMgr == null || _cachedInvMgr.WasCollected || _cachedInvMgr.Pointer == IntPtr.Zero)
+                {
+                    _cachedInvMgr = UnityEngine.Object.FindObjectOfType<C4InventoryManager>();
+                }
+            }
+            catch
+            {
+                _cachedInvMgr = null;
             }
             return _cachedInvMgr;
         }
 
         public static C4SkillManager GetSkillManager()
         {
-            if (_cachedSkillMgr == null || _cachedSkillMgr.Pointer == IntPtr.Zero || _cachedSkillMgr.WasCollected)
+            try
             {
-                _cachedSkillMgr = UnityEngine.Object.FindObjectOfType<C4SkillManager>();
+                if (_cachedSkillMgr == null || _cachedSkillMgr.WasCollected || _cachedSkillMgr.Pointer == IntPtr.Zero)
+                {
+                    _cachedSkillMgr = UnityEngine.Object.FindObjectOfType<C4SkillManager>();
+                }
+            }
+            catch
+            {
+                _cachedSkillMgr = null;
             }
             return _cachedSkillMgr;
         }
@@ -960,13 +974,13 @@ switch (lower)
                     var allLiveItems = invMgr.GetAllItems();
                     if (allLiveItems != null)
                     {
-                        var readOnlyColl = allLiveItems.Cast<Il2CppSystem.Collections.Generic.IReadOnlyCollection<RtItemEntity>>();
+                        var readOnlyColl = allLiveItems.TryCast<Il2CppSystem.Collections.Generic.IReadOnlyCollection<RtItemEntity>>();
                         int liveCount = readOnlyColl != null ? readOnlyColl.Count : 0;
 
                         for (int i = 0; i < liveCount; i++)
                         {
                             var itm = allLiveItems[i];
-                            if (itm == null || itm.Pointer == IntPtr.Zero) continue;
+                            if (itm == null || itm.WasCollected || itm.Pointer == IntPtr.Zero) continue;
 
                             int rawSlot = (int)itm.GearSlot;
                             int slot = ResolveEffectiveSlot(itm, rawSlot);

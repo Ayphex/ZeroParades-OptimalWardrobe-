@@ -1,22 +1,18 @@
 // === FILE: ModSource/Hooks/InventoryHooks.cs ===
 // Directive: WARDROBE-02-CLEAN-SLATE-ENGINE-AND-QA
 // C4InventoryManager Dirty Triggers & Non-Destructive UI Tooltip Tagging.
-// Inviolable Law 2: Zero persistent mutation to RtItemEntity or heap modifiers.
-// Inviolable Law 4: Non-destructive visual tagging in SetItemDescription.
+// Zero-DelegateSupport & Zero-ClassInjector implementation for Unity 6000.3+ IL2CPP.
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Reflection;
 using HarmonyLib;
-using UnityEngine;
-using Il2CppInterop.Runtime;
 using TMPro;
+using UnityEngine;
 using ZAUM.C4.UI.Inventory;
 using ZAUM.C4.UI.Modifiers;
 using ZAUM.FELD.C4.Dialogues.Model.Entities;
 using ZAUM.FELD.C4.Inventory.Management;
-using ZAUM.FELD.Tools.Console;
 using ZeroParadesOptimalWardrobe.Core;
 
 namespace ZeroParadesOptimalWardrobe.Hooks
@@ -28,6 +24,9 @@ namespace ZeroParadesOptimalWardrobe.Hooks
     [HarmonyPatch]
     public static class InventoryMutationPatch
     {
+        [HarmonyPrepare]
+        public static bool Prepare(MethodBase original) => SafeHarmonyPatcher.PrepareMethod(original);
+
         public static IEnumerable<MethodBase> TargetMethods()
         {
             var methods = new List<MethodBase>();
@@ -69,8 +68,11 @@ namespace ZeroParadesOptimalWardrobe.Hooks
             if (LifecycleGuard.IsStartupGraceActive || LifecycleGuard.IsEngineInLoadingState || __instance == null)
                 return;
 
-            if (__instance is C4InventoryManager invMgr && invMgr.Pointer != IntPtr.Zero)
+            if (__instance is C4InventoryManager invMgr)
             {
+                if (invMgr.WasCollected || invMgr.Pointer == IntPtr.Zero)
+                    return;
+
                 unsafe
                 {
                     NativeC4InventoryManager* pInv = (NativeC4InventoryManager*)invMgr.Pointer;
@@ -82,47 +84,29 @@ namespace ZeroParadesOptimalWardrobe.Hooks
                 }
             }
 
-            // Mark dirty ONLY; do NOT call Evaluate() synchronously on every intermediate equip/unequip sub-step.
-            // Lazy evaluation on tooltip/check query and the 0.25s debounce tick in LifecycleGuard handle recalculation cleanly.
+            // Mark dirty ONLY; lazy evaluation handles recalculation cleanly once the save/load gate is open.
             WardrobeConditioningEngine.MarkDirty(__originalMethod != null ? __originalMethod.Name : "InventoryMutation");
         }
     }
 
     // =========================================================================
-    // 2. INVENTORY LIFECYCLE & DESERIALIZATION CASCADE HOOKS
+    // 2. INVENTORY LIFECYCLE & DESERIALIZATION HOOKS
     // =========================================================================
 
-    [HarmonyPatch]
+    [HarmonyPatch(typeof(C4InventoryManager), nameof(C4InventoryManager.LoadFromInventoryObject))]
     public static class InventoryLifecyclePatches
     {
-        [HarmonyPatch(typeof(C4InventoryManager), "add_OnInventoryLoaded")]
-        [HarmonyPostfix]
-        public static void OnAddOnInventoryLoadedPostfix(C4InventoryManager __instance)
-        {
-            if (__instance != null && __instance.Pointer != IntPtr.Zero)
-            {
-                unsafe
-                {
-                    NativeC4InventoryManager* pInv = (NativeC4InventoryManager*)__instance.Pointer;
-                    if (pInv != null && pInv->IsInitialized != 0)
-                    {
-                        LifecycleGuard.IsEngineInLoadingState = false;
-                        WardrobeConditioningEngine.MarkDirty("OnInventoryLoaded");
-                        WardrobeConditioningEngine.Evaluate();
-                    }
-                }
-            }
-        }
+        [HarmonyPrepare]
+        public static bool Prepare(MethodBase original) => SafeHarmonyPatcher.PrepareMethod(original);
 
-        [HarmonyPatch(typeof(C4InventoryManager), nameof(C4InventoryManager.LoadFromInventoryObject))]
         [HarmonyPostfix]
         public static void OnLoadFromInventoryObjectPostfix(C4InventoryManager __instance)
         {
-            if (__instance != null && __instance.Pointer != IntPtr.Zero)
+            if (__instance != null && !__instance.WasCollected && __instance.Pointer != IntPtr.Zero)
             {
-                LifecycleGuard.IsEngineInLoadingState = false;
+                // Mark dirty only; do not prematurely clear IsEngineInLoadingState or force synchronous
+                // evaluation while other managers may still be mid-deserialization.
                 WardrobeConditioningEngine.MarkDirty("LoadFromInventoryObject");
-                WardrobeConditioningEngine.Evaluate();
             }
         }
     }
@@ -145,7 +129,7 @@ namespace ZeroParadesOptimalWardrobe.Hooks
         public static UpgradeEvaluation EvaluateCandidateItem(RtItemEntity candidateItem)
         {
             var result = new UpgradeEvaluation();
-            if (candidateItem == null || candidateItem.Pointer == IntPtr.Zero)
+            if (candidateItem == null || candidateItem.WasCollected || candidateItem.Pointer == IntPtr.Zero)
                 return result;
 
             // Contextual State Deduction: An item is "unowned" if not in stash or equipped
@@ -219,9 +203,21 @@ namespace ZeroParadesOptimalWardrobe.Hooks
 
     public static class InventoryTooltipInjector
     {
+        private static bool ContainsModAnnotation(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return false;
+            return text.Contains("Optimal:") ||
+                   text.Contains("Store") ||
+                   text.Contains("Stash:") ||
+                   text.Contains("Outclassed") ||
+                   text.Contains("Extraction Failed") ||
+                   text.Contains("Error:");
+        }
+
         public static void InjectBiSToDetailsUI(InventoryItemDetailsController controller, string entityIdFallback = null, IntPtr itemPtrFallback = default)
         {
-            if (controller == null || controller.Pointer == IntPtr.Zero) return;
+            if (Plugin.s_ModEnabled != null && !Plugin.s_ModEnabled.Value) return;
+            if (controller == null || controller.WasCollected || controller.Pointer == IntPtr.Zero) return;
 
             string entityId = entityIdFallback;
             if (string.IsNullOrEmpty(entityId))
@@ -232,10 +228,10 @@ namespace ZeroParadesOptimalWardrobe.Hooks
             IntPtr itemPtr = itemPtrFallback;
             var invMgr = controller.m_inventoryManager ?? WardrobeConditioningEngine.GetInventoryManager();
             RtItemEntity rtEntity = null;
-            if (!string.IsNullOrEmpty(entityId) && invMgr != null)
+            if (!string.IsNullOrEmpty(entityId) && invMgr != null && !invMgr.WasCollected)
             {
                 invMgr.TryGetEntity(entityId, out rtEntity);
-                if (rtEntity != null && rtEntity.Pointer != IntPtr.Zero && itemPtr == IntPtr.Zero)
+                if (rtEntity != null && !rtEntity.WasCollected && rtEntity.Pointer != IntPtr.Zero && itemPtr == IntPtr.Zero)
                 {
                     itemPtr = rtEntity.Pointer;
                 }
@@ -248,16 +244,26 @@ namespace ZeroParadesOptimalWardrobe.Hooks
 
             if (rtEntity != null && !WardrobeConditioningEngine.IsItemOwned(rtEntity))
             {
-                var eval = ShopUpgradeAdvisor.EvaluateCandidateItem(rtEntity);
-                if (eval.IsUnowned && eval.IsWearable && !string.IsNullOrEmpty(eval.TooltipAnnotation))
+                if (Plugin.ShopAdvisorEnabled == null || Plugin.ShopAdvisorEnabled.Value)
                 {
-                    annotation = eval.TooltipAnnotation;
-                    isStoreCandidate = true;
+                    var eval = ShopUpgradeAdvisor.EvaluateCandidateItem(rtEntity);
+                    if (eval.IsUnowned && eval.IsWearable && !string.IsNullOrEmpty(eval.TooltipAnnotation))
+                    {
+                        annotation = eval.TooltipAnnotation;
+                        isStoreCandidate = true;
+                    }
+                }
+                else
+                {
+                    return;
                 }
             }
 
             if (string.IsNullOrEmpty(annotation))
             {
+                if (Plugin.BestInSlotTagsEnabled != null && !Plugin.BestInSlotTagsEnabled.Value)
+                    return;
+
                 try
                 {
                     annotation = WardrobeConditioningEngine.GetTooltipAnnotation(entityId, itemPtr);
@@ -269,7 +275,7 @@ namespace ZeroParadesOptimalWardrobe.Hooks
                             annotation = WardrobeConditioningEngine.GetTooltipAnnotation(rtEntity.Name, itemPtr);
                     }
 
-                    // UNIVERSAL TOOLTIP GUARANTEE: Fallback for wearable items (e.g. Splash Boots, Neck pseudo-slot 99)
+                    // UNIVERSAL TOOLTIP GUARANTEE: Fallback for wearable items
                     if (string.IsNullOrEmpty(annotation) && rtEntity != null && WardrobeConditioningEngine.ResolveEffectiveSlot(rtEntity) > 0)
                     {
                         annotation = WardrobeConditioningEngine.GetOutclassedDiagnosticAnnotation(rtEntity);
@@ -291,7 +297,6 @@ namespace ZeroParadesOptimalWardrobe.Hooks
                 if (tmpTarget != null)
                 {
                     string curText = tmpTarget.text ?? "";
-                    // Strip any stale [Optimal: ...], [Store: ...], [Stash: ...], [Outclassed...], [Extraction Failed:...], or [Error:...
                     int existingIdx = curText.IndexOf("\n\n<color=#", StringComparison.Ordinal);
                     if (existingIdx < 0)
                     {
@@ -307,12 +312,12 @@ namespace ZeroParadesOptimalWardrobe.Hooks
                         curText = curText.Substring(0, existingIdx);
                     }
 
-                    if (!string.IsNullOrEmpty(annotation) && 
-                        !curText.Contains("[Optimal:") && 
-                        !curText.Contains("[Store") && 
-                        !curText.Contains("[Stash:") && 
-                        !curText.Contains("[Outclassed") && 
-                        !curText.Contains("[Extraction Failed:") && 
+                    if (!string.IsNullOrEmpty(annotation) &&
+                        !curText.Contains("[Optimal:") &&
+                        !curText.Contains("[Store") &&
+                        !curText.Contains("[Stash:") &&
+                        !curText.Contains("[Outclassed") &&
+                        !curText.Contains("[Extraction Failed:") &&
                         !curText.Contains("[Error:"))
                     {
                         string updated = curText + "\n\n" + annotation;
@@ -328,42 +333,34 @@ namespace ZeroParadesOptimalWardrobe.Hooks
             }
 
             // 2. ModifiersController badge injection
-            if (controller.m_modifiersController != null)
+            // NOTE: Never pass C# lambdas cast to Il2CppSystem.Action<T> (e.g. ForEachModifier),
+            // because DelegateSupport.ConvertDelegate triggers ClassInjector -> InjectorHelpers.Setup(),
+            // which crashes Unity 6000.3+ IL2CPP when UnityLogListening = false.
+            if (controller.m_modifiersController != null && !controller.m_modifiersController.WasCollected)
             {
                 try
                 {
                     bool hasBadge = false;
-                    controller.m_modifiersController.ForEachModifier((Il2CppSystem.Action<ModifierEntryUI>)((entry) =>
+                    var container = controller.m_modifiersController.m_modifierEntriesContainer;
+                    if (container != null)
                     {
-                        if (entry != null && entry.m_description != null && 
-                            (entry.m_description.Contains("Optimal:") || 
-                             entry.m_description.Contains("Store") || 
-                             entry.m_description.Contains("Stash:") || 
-                             entry.m_description.Contains("Outclassed") ||
-                             entry.m_description.Contains("Extraction Failed") ||
-                             entry.m_description.Contains("Error:")))
+                        int childCount = container.childCount;
+                        for (int i = 0; i < childCount && !hasBadge; i++)
                         {
-                            hasBadge = true;
-                        }
-                    }));
+                            var child = container.GetChild(i);
+                            if (child == null || child.gameObject == null || !child.gameObject.activeSelf)
+                                continue;
 
-                    if (!hasBadge && controller.m_modifiersController.m_modifierEntriesContainer != null)
-                    {
-                        var tmps = controller.m_modifiersController.m_modifierEntriesContainer.GetComponentsInChildren<TMPro.TextMeshProUGUI>(true);
-                        if (tmps != null)
-                        {
-                            foreach (var t in tmps)
+                            var tmps = child.GetComponentsInChildren<TextMeshProUGUI>(true);
+                            if (tmps != null)
                             {
-                                if (t != null && t.text != null && 
-                                    (t.text.Contains("Optimal:") || 
-                                     t.text.Contains("Store") || 
-                                     t.text.Contains("Stash:") || 
-                                     t.text.Contains("Outclassed") ||
-                                     t.text.Contains("Extraction Failed") ||
-                                     t.text.Contains("Error:")))
+                                foreach (var t in tmps)
                                 {
-                                    hasBadge = true;
-                                    break;
+                                    if (t != null && ContainsModAnnotation(t.text))
+                                    {
+                                        hasBadge = true;
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -399,16 +396,19 @@ namespace ZeroParadesOptimalWardrobe.Hooks
     [HarmonyPatch(typeof(InventoryItemDetailsController), nameof(InventoryItemDetailsController.RefreshTexts))]
     public static class InventoryItemDetailsController_RefreshTexts_Patch
     {
+        [HarmonyPrepare]
+        public static bool Prepare(MethodBase original) => SafeHarmonyPatcher.PrepareMethod(original);
+
         [HarmonyPostfix]
         public static void Postfix(InventoryItemDetailsController __instance, InventoryItem inventoryItem, RtItemEntity itemEntity)
         {
-            if (LifecycleGuard.IsStartupGraceActive || !LifecycleGuard.IsSaveLoadGateOpen() || __instance == null || __instance.Pointer == IntPtr.Zero)
+            if (LifecycleGuard.IsStartupGraceActive || !LifecycleGuard.IsSaveLoadGateOpen() || __instance == null || __instance.WasCollected || __instance.Pointer == IntPtr.Zero)
                 return;
 
             try
             {
                 string entityId = inventoryItem?.EntityID ?? itemEntity?.Name;
-                IntPtr ptr = itemEntity != null ? itemEntity.Pointer : IntPtr.Zero;
+                IntPtr ptr = (itemEntity != null && !itemEntity.WasCollected) ? itemEntity.Pointer : IntPtr.Zero;
                 InventoryTooltipInjector.InjectBiSToDetailsUI(__instance, entityId, ptr);
             }
             catch { }
@@ -418,10 +418,13 @@ namespace ZeroParadesOptimalWardrobe.Hooks
     [HarmonyPatch(typeof(InventoryItemDetailsController), nameof(InventoryItemDetailsController.UpdateItemDetails))]
     public static class InventoryItemDetailsController_UpdateItemDetails_Patch
     {
+        [HarmonyPrepare]
+        public static bool Prepare(MethodBase original) => SafeHarmonyPatcher.PrepareMethod(original);
+
         [HarmonyPostfix]
         public static void Postfix(InventoryItemDetailsController __instance)
         {
-            if (LifecycleGuard.IsStartupGraceActive || !LifecycleGuard.IsSaveLoadGateOpen() || __instance == null || __instance.Pointer == IntPtr.Zero)
+            if (LifecycleGuard.IsStartupGraceActive || !LifecycleGuard.IsSaveLoadGateOpen() || __instance == null || __instance.WasCollected || __instance.Pointer == IntPtr.Zero)
                 return;
 
             try
@@ -435,10 +438,13 @@ namespace ZeroParadesOptimalWardrobe.Hooks
     [HarmonyPatch(typeof(InventoryItemDetailsController), nameof(InventoryItemDetailsController.SetupItemDetails))]
     public static class InventoryItemDetailsController_SetupItemDetails_Patch
     {
+        [HarmonyPrepare]
+        public static bool Prepare(MethodBase original) => SafeHarmonyPatcher.PrepareMethod(original);
+
         [HarmonyPostfix]
         public static void Postfix(InventoryItemDetailsController __instance)
         {
-            if (LifecycleGuard.IsStartupGraceActive || !LifecycleGuard.IsSaveLoadGateOpen() || __instance == null || __instance.Pointer == IntPtr.Zero)
+            if (LifecycleGuard.IsStartupGraceActive || !LifecycleGuard.IsSaveLoadGateOpen() || __instance == null || __instance.WasCollected || __instance.Pointer == IntPtr.Zero)
                 return;
 
             try
@@ -452,10 +458,16 @@ namespace ZeroParadesOptimalWardrobe.Hooks
     [HarmonyPatch(typeof(InventoryItemDetailsController), nameof(InventoryItemDetailsController.SetItemDescription))]
     public static class ItemDetailsDescriptionPatch
     {
+        [HarmonyPrepare]
+        public static bool Prepare(MethodBase original) => SafeHarmonyPatcher.PrepareMethod(original);
+
         [HarmonyPrefix]
         public static void Prefix(InventoryItemDetailsController __instance, ref string description)
         {
-            if (LifecycleGuard.IsStartupGraceActive || !LifecycleGuard.IsSaveLoadGateOpen() || __instance == null || __instance.Pointer == IntPtr.Zero)
+            if (Plugin.s_ModEnabled != null && !Plugin.s_ModEnabled.Value)
+                return;
+
+            if (LifecycleGuard.IsStartupGraceActive || !LifecycleGuard.IsSaveLoadGateOpen() || __instance == null || __instance.WasCollected || __instance.Pointer == IntPtr.Zero)
                 return;
 
             try
@@ -466,7 +478,7 @@ namespace ZeroParadesOptimalWardrobe.Hooks
                 string entityId = item.EntityID;
                 RtItemEntity rtEntity = null;
                 var invMgr = __instance.m_inventoryManager ?? WardrobeConditioningEngine.GetInventoryManager();
-                if (invMgr != null && !string.IsNullOrEmpty(entityId))
+                if (invMgr != null && !invMgr.WasCollected && !string.IsNullOrEmpty(entityId))
                 {
                     invMgr.TryGetEntity(entityId, out rtEntity);
                 }
@@ -478,16 +490,26 @@ namespace ZeroParadesOptimalWardrobe.Hooks
                     // Check for Store Candidate Item (Contextual State Deduction: Unowned if not in stash or equipped)
                     if (rtEntity != null && !WardrobeConditioningEngine.IsItemOwned(rtEntity))
                     {
-                        var eval = ShopUpgradeAdvisor.EvaluateCandidateItem(rtEntity);
-                        if (eval.IsUnowned && eval.IsWearable && !string.IsNullOrEmpty(eval.TooltipAnnotation))
+                        if (Plugin.ShopAdvisorEnabled == null || Plugin.ShopAdvisorEnabled.Value)
                         {
-                            if (description != null && !description.Contains("[Store"))
+                            var eval = ShopUpgradeAdvisor.EvaluateCandidateItem(rtEntity);
+                            if (eval.IsUnowned && eval.IsWearable && !string.IsNullOrEmpty(eval.TooltipAnnotation))
                             {
-                                description = description + "\n\n" + eval.TooltipAnnotation;
+                                if (description != null && !description.Contains("[Store"))
+                                {
+                                    description = description + "\n\n" + eval.TooltipAnnotation;
+                                }
+                                return;
                             }
+                        }
+                        else
+                        {
                             return;
                         }
                     }
+
+                    if (Plugin.BestInSlotTagsEnabled != null && !Plugin.BestInSlotTagsEnabled.Value)
+                        return;
 
                     // Owned item BiS annotation
                     if (!string.IsNullOrEmpty(entityId))
@@ -501,7 +523,7 @@ namespace ZeroParadesOptimalWardrobe.Hooks
                                 annotation = WardrobeConditioningEngine.GetTooltipAnnotation(rtEntity.Name, rtEntity.Pointer);
                         }
 
-                        // UNIVERSAL TOOLTIP GUARANTEE: Fallback for wearable items (e.g. Splash Boots, Neck pseudo-slot 99)
+                        // UNIVERSAL TOOLTIP GUARANTEE: Fallback for wearable items
                         if (string.IsNullOrEmpty(annotation) && rtEntity != null && WardrobeConditioningEngine.ResolveEffectiveSlot(rtEntity) > 0)
                         {
                             annotation = WardrobeConditioningEngine.GetOutclassedDiagnosticAnnotation(rtEntity);
@@ -516,12 +538,12 @@ namespace ZeroParadesOptimalWardrobe.Hooks
 
                 if (!string.IsNullOrEmpty(annotation))
                 {
-                    if (description != null && 
-                        !description.Contains("[Optimal:") && 
-                        !description.Contains("[Store") && 
-                        !description.Contains("[Stash:") && 
-                        !description.Contains("[Outclassed") && 
-                        !description.Contains("[Error:") && 
+                    if (description != null &&
+                        !description.Contains("[Optimal:") &&
+                        !description.Contains("[Store") &&
+                        !description.Contains("[Stash:") &&
+                        !description.Contains("[Outclassed") &&
+                        !description.Contains("[Error:") &&
                         !description.Contains("[Extraction Failed:"))
                     {
                         description = description + "\n\n" + annotation;
@@ -537,7 +559,7 @@ namespace ZeroParadesOptimalWardrobe.Hooks
         [HarmonyPostfix]
         public static void Postfix(InventoryItemDetailsController __instance)
         {
-            if (LifecycleGuard.IsStartupGraceActive || !LifecycleGuard.IsSaveLoadGateOpen() || __instance == null || __instance.Pointer == IntPtr.Zero)
+            if (LifecycleGuard.IsStartupGraceActive || !LifecycleGuard.IsSaveLoadGateOpen() || __instance == null || __instance.WasCollected || __instance.Pointer == IntPtr.Zero)
                 return;
 
             try
@@ -548,54 +570,63 @@ namespace ZeroParadesOptimalWardrobe.Hooks
         }
     }
 
-[HarmonyPatch(typeof(ModifiersController), nameof(ModifiersController.SetModifiers), new Type[] { typeof(RtItemEntity), typeof(ZAUM.C4.GameTools.GameToolsManager) })]
+    [HarmonyPatch(typeof(ModifiersController), nameof(ModifiersController.SetModifiers), new Type[] { typeof(RtItemEntity), typeof(ZAUM.C4.GameTools.GameToolsManager) })]
     public static class ModifiersController_SetModifiers_Patch
     {
+        [HarmonyPrepare]
+        public static bool Prepare(MethodBase original) => SafeHarmonyPatcher.PrepareMethod(original);
+
         [HarmonyPostfix]
         public static void Postfix(ModifiersController __instance, RtItemEntity itemEntity)
         {
-            if (__instance == null || __instance.Pointer == IntPtr.Zero || itemEntity == null || itemEntity.Pointer == IntPtr.Zero)
+            if (Plugin.s_ModEnabled != null && !Plugin.s_ModEnabled.Value)
                 return;
 
-            // Check if Shop Advisor is enabled in configuration
-            if (!Plugin.ShopAdvisorEnabled.Value)
+            if (Plugin.ShopAdvisorEnabled == null || !Plugin.ShopAdvisorEnabled.Value)
                 return;
 
-            bool isOwned = WardrobeConditioningEngine.IsItemOwned(itemEntity);
+            if (LifecycleGuard.IsStartupGraceActive || !LifecycleGuard.IsSaveLoadGateOpen())
+                return;
+
+            if (__instance == null || __instance.WasCollected || __instance.Pointer == IntPtr.Zero ||
+                itemEntity == null || itemEntity.WasCollected || itemEntity.Pointer == IntPtr.Zero)
+                return;
 
             try
             {
-                // 1. Check if candidate item is unowned (store item)
-                if (!isOwned)
+                // 1. Resolve the modifier entries container (layout group root)
+                Transform container = null;
+                try { container = __instance.m_modifierEntriesContainer; } catch { }
+                if (container == null)
+                    return;
+
+                // 2. Always clean up pooled artifacts from recycled UI cards first
+                const string annotationName = "OptimalWardrobe_ShopAnnotation";
+                try
+                {
+                    for (int i = container.childCount - 1; i >= 0; i--)
+                    {
+                        var child = container.GetChild(i);
+                        if (child != null && child.name == annotationName)
+                        {
+                            child.gameObject.SetActive(false);
+                            child.SetParent(null, false);
+                            UnityEngine.Object.Destroy(child.gameObject);
+                        }
+                    }
+                }
+                catch { }
+
+                // 3. Check if candidate item is unowned (store item)
+                if (!WardrobeConditioningEngine.IsItemOwned(itemEntity))
                 {
                     var eval = ShopUpgradeAdvisor.EvaluateCandidateItem(itemEntity);
 
                     if (eval.IsUnowned && eval.IsWearable && !string.IsNullOrEmpty(eval.TooltipAnnotation))
                     {
-                        // 2. Resolve the modifier entries container (layout group root)
-                        UnityEngine.Transform container = null;
-                        try { container = __instance.m_modifierEntriesContainer; } catch { }
-                        if (container == null)
-                            return;
-
-                        // 3. Clean up pooled artifacts from recycled UI cards
-                        const string annotationName = "OptimalWardrobe_ShopAnnotation";
-                        try
-                        {
-                            for (int i = container.childCount - 1; i >= 0; i--)
-                            {
-                                var child = container.GetChild(i);
-                                if (child != null && child.name == annotationName)
-                                {
-                                    UnityEngine.Object.DestroyImmediate(child.gameObject);
-                                }
-                            }
-                        }
-                        catch { }
-
                         // 4. Spawn a fresh annotation element into the layout group
-                        var annotationObj = new UnityEngine.GameObject(annotationName);
-                        var tmp = annotationObj.AddComponent<TMPro.TextMeshProUGUI>();
+                        var annotationObj = new GameObject(annotationName);
+                        var tmp = annotationObj.AddComponent<TextMeshProUGUI>();
                         tmp.text = eval.TooltipAnnotation;
                         tmp.fontSize = 16f;
                         annotationObj.transform.SetParent(container, false);
@@ -605,42 +636,4 @@ namespace ZeroParadesOptimalWardrobe.Hooks
             catch { }
         }
     }
-
-// =========================================================================
-// 3. FELD CONSOLE MUTE PATCHES (Suppress Benign Native Engine Spam)
-// =========================================================================
-
-[HarmonyPatch(typeof(FeldConsole), "LogWarning", new Type[] { typeof(Il2CppSystem.Object) })]
-public static class FeldConsole_LogWarning_Patch
-{
-    public static bool Prefix(Il2CppSystem.Object message)
-    {
-        if (message == null) return true;
-        string msg = message.ToString();
-        if (msg.Contains("equipped in the inventory") || 
-            msg.Contains("Calling modifiers getter for") || 
-            msg.Contains("Wasn't able to get modifier value from"))
-        {
-            return false; // Suppress native ZA/UM noise from polluting Player.log
-        }
-        return true;
-    }
 }
-
-[HarmonyPatch(typeof(FeldConsole), "LogError", new Type[] { typeof(Il2CppSystem.Object) })]
-public static class FeldConsole_LogError_Patch
-{
-    public static bool Prefix(Il2CppSystem.Object message)
-    {
-        if (message == null) return true;
-        string msg = message.ToString();
-        if (msg.Contains("Calling modifiers getter for") || 
-            msg.Contains("Wasn't able to get modifier value from"))
-        {
-            return false; // Suppress benign missing skill info errors
-        }
-        return true;
-    }
-}
-
-}

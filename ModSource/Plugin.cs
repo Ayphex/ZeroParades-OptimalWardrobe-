@@ -1,22 +1,16 @@
 // === FILE: ModSource/Plugin.cs ===
-// Directive: WARDROBE-02-CLEAN-SLATE-ENGINE-AND-QA v33.0.6
+// Directive: WARDROBE-02-CLEAN-SLATE-ENGINE-AND-QA v33.1.0
 // Clean-Slate Modular Architecture for Optimal Wardrobe.
-// Integrates Two-Phase Conditioning Engine, Ephemeral Active Check Injection,
-// Non-Destructive UI Tooltips, Scene/LoadingState Air-Gap Lifecycle Guards,
-// and Autonomous Rigorous QA Puppeteer Driver.
+// Zero-ClassInjector & Zero-DelegateSupport design for full Unity 6000.3+ IL2CPP
+// compatibility (including stock BepInEx 6 setups with UnityLogListening = false).
 
 using System;
-using System.Collections.Generic;
-using System.IO;
 using System.Runtime.InteropServices;
 using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
 using BepInEx.Unity.IL2CPP;
 using HarmonyLib;
-using Il2CppInterop.Runtime;
-using Il2CppInterop.Runtime.Injection;
-using UnityEngine;
 using UnityEngine.SceneManagement;
 using ZAUM.FELD.C4.Dialogues.Model.Cards;
 using ZeroParadesOptimalWardrobe.Core;
@@ -31,7 +25,7 @@ namespace ZeroParadesOptimalWardrobe
         public static void LogError(string message) => Plugin.Logger?.LogError(message);
     }
 
-    [BepInPlugin("com.keith.zeroparades.optimalwardrobe", "Zero Parades: Optimal Wardrobe", "33.0.6")]
+    [BepInPlugin("com.keith.zeroparades.optimalwardrobe", "Zero Parades: Optimal Wardrobe", "33.1.0")]
     public class Plugin : BasePlugin
     {
         public static Plugin Instance { get; private set; }
@@ -45,19 +39,17 @@ namespace ZeroParadesOptimalWardrobe
         public static ChecksActiveModifiersInfoItem SyntheticModifier = null;
         public static IntPtr SyntheticModifierPtr = IntPtr.Zero;
 
-        // Pinned Native Config
-        private static GCHandle _pinnedConfigHandle;
-        private static IntPtr _pinnedConfigPtr = IntPtr.Zero;
+        // Unmanaged Native Config Buffer
+        private static IntPtr _nativeConfigPtr = IntPtr.Zero;
 
-        // Pre-allocated unmanaged Il2CppString* pointers
+        // Retained legacy pointer fields (unused; zero unrooted IL2CPP heap allocations)
         public static IntPtr PtrStashAssist = IntPtr.Zero;
         public static IntPtr PtrUniqueBis = IntPtr.Zero;
         public static IntPtr PtrSharedBis = IntPtr.Zero;
         public static IntPtr PtrCosmetic = IntPtr.Zero;
 
-        // Wardrobe Sync Behaviour
-        public static WardrobeSyncBehaviour SyncInstance = null;
-        private static GameObject s_SyncContainer = null;
+        // Legacy compatibility placeholder (no MonoBehaviour / ClassInjector used)
+        public static object SyncInstance = null;
 
         public static void WriteTrace(string line)
         {
@@ -67,7 +59,6 @@ namespace ZeroParadesOptimalWardrobe
         public static void OnCheckStarted()
         {
             LifecycleGuard.IsCheckActive = true;
-            InitSyntheticModifier();
             WriteTrace("[CHECK-LIFECYCLE] Check Triggered: Stash assistance active.");
         }
 
@@ -78,16 +69,25 @@ namespace ZeroParadesOptimalWardrobe
             {
                 try
                 {
-                    if (SyntheticModifier != null)
+                    if (ActiveModifierList is Il2CppSystem.Collections.Generic.List<ChecksActiveModifiersInfoItem> typedList)
                     {
-                        if (ActiveModifierList is Il2CppSystem.Collections.Generic.List<ChecksActiveModifiersInfoItem> typedList)
+                        for (int i = typedList.Count - 1; i >= 0; i--)
                         {
-                            typedList.Remove(SyntheticModifier);
+                            var mod = typedList[i];
+                            if (mod == null || mod.WasCollected || mod.Pointer == IntPtr.Zero)
+                                continue;
+
+                            string exp = null;
+                            try { exp = mod.Explanation; } catch { }
+                            if (exp != null && exp.Contains("Optimal Wardrobe"))
+                            {
+                                typedList.RemoveAt(i);
+                            }
                         }
-                        else if (ActiveModifierList is Il2CppSystem.Collections.IList il2cppList)
-                        {
-                            il2cppList.Remove(SyntheticModifier);
-                        }
+                    }
+                    else if (SyntheticModifier != null && !SyntheticModifier.WasCollected && ActiveModifierList is Il2CppSystem.Collections.IList il2cppList)
+                    {
+                        il2cppList.Remove(SyntheticModifier);
                     }
                 }
                 catch { }
@@ -158,39 +158,24 @@ namespace ZeroParadesOptimalWardrobe
             Instance = this;
             Logger = base.Log;
 
+            WriteTrace("=== Optimal Wardrobe v33.1.0 Initializing (Zero-Injector Headless Modular Engine) ===");
+
+            // 1. Bind configuration & allocate unmanaged config struct BEFORE syncing parameters
             BindConfiguration();
+            InitNativeModConfig();
             SyncAllToEngine();
 
-            WriteTrace("=== Optimal Wardrobe v33.0.6 Initializing (Pure Headless Modular Engine) ===");
-
-            // Hook live config file changes
+            // 2. Hook live config file changes (pure managed event, no IL2CPP delegate conversion)
             Config.SettingChanged += OnSettingChanged;
 
-            // 1. Register and Spawn Sync Behaviour for Engine Ticking
-            try
-            {
-                ClassInjector.RegisterTypeInIl2Cpp<WardrobeSyncBehaviour>();
-                EnsureSyncBehaviour();
-                WriteTrace("Spawned WardrobeSyncBehaviour container safely.");
-            }
-            catch (Exception ex)
-            {
-                WriteTrace("WardrobeSyncBehaviour registration error: " + ex.Message);
-            }
+            // 3. Start pure-managed startup grace clock (no ClassInjector / MonoBehaviour needed)
+            LifecycleGuard.ResetStartupGrace();
 
-            // 2. Initialize Unmanaged Pointers & Synthetic Modifier
-            InitNativeStringPointers();
-            InitSyntheticModifier();
-            InitNativeModConfig();
-
-            // Apply Core Gameplay Patches (Inventory, Dialogue, Checks)
+            // 4. Apply Core Gameplay Patches safely with native MethodPointer / ICF / thunk validation
             var harmony = new Harmony("com.keith.zeroparades.optimalwardrobe");
-            harmony.PatchAll();
+            SafeHarmonyPatcher.ApplyAllPatches(harmony);
 
-            // Verify InventoryHooks registration (ModifiersController_SetModifiers_Patch)
-            WriteTrace("[HOOK-TRACE] InventoryHooks registered: ModifiersController.SetModifiers");
-
-            WriteTrace("=== Optimal Wardrobe v33.0.6 Loaded Successfully. UI & Scaffolding Excised. ===");
+            WriteTrace("=== Optimal Wardrobe v33.1.0 Loaded Successfully. ===");
         }
 
         private void BindConfiguration()
@@ -234,6 +219,14 @@ namespace ZeroParadesOptimalWardrobe
         {
             try
             {
+                unsafe
+                {
+                    if (PtrNativeConfig != null && s_ModEnabled != null)
+                    {
+                        PtrNativeConfig->ModEnabled = s_ModEnabled.Value ? 1 : 0;
+                    }
+                }
+
                 NativeEngineStructs.UpdateConfig(
                     ShopAdvisorEnabled.Value,
                     BestInSlotTagsEnabled.Value,
@@ -257,10 +250,14 @@ namespace ZeroParadesOptimalWardrobe
 
             for (int i = 0; i < 15; i++)
             {
-                bool suppressed = SkillSuppressionEntries[i].Value;
-                WardrobeConditioningEngine.SetSkillSuppressed(i, suppressed);
+                if (SkillSuppressionEntries[i] != null)
+                {
+                    bool suppressed = SkillSuppressionEntries[i].Value;
+                    WardrobeConditioningEngine.SetSkillSuppressed(i, suppressed);
+                }
             }
 
+            WardrobeConditioningEngine.MarkDirty("ConfigSync");
             WriteTrace("[CONFIG-SYNC] All parameters synchronized to engine.");
         }
 
@@ -280,32 +277,38 @@ namespace ZeroParadesOptimalWardrobe
         }
 
         // ====================================================================
-        // NATIVE CONFIG & POINTER INITIALIZATION
+        // NATIVE CONFIG INITIALIZATION (PURE UNMANAGED MEMORY, ZERO IL2CPP CALLS)
         // ====================================================================
-        public static void InitNativeModConfig()
+        public static unsafe void InitNativeModConfig()
         {
             try
             {
-                var config = new NativeModConfig
+                if (_nativeConfigPtr == IntPtr.Zero)
                 {
-                    ModEnabled = (Instance != null && Instance.ModEnabled.Value) ? 1 : 0,
-                    ConditioningRatio = Instance?.ConditioningRatio.Value ?? 0.75f,
-                    SuppressPenalties = (Instance?.SuppressEquippedPenalties.Value ?? true) ? 1 : 0,
-                    DiminishingReturns = (Instance?.DiminishingReturnsEnabled.Value ?? true) ? 1 : 0,
-                    AutoEquipOptimal = 1,
-                    StashAssistBonus = 2,
-                    StashAssistBonusCap = Instance?.StashAssistBonusCap.Value ?? 5,
-                    SuppressedSkillsMask = Instance?.SuppressedSkillsMask.Value ?? 0UL
-                };
-
-                _pinnedConfigHandle = GCHandle.Alloc(config, GCHandleType.Pinned);
-                _pinnedConfigPtr = _pinnedConfigHandle.AddrOfPinnedObject();
-                unsafe
-                {
-                    PtrNativeConfig = (NativeModConfig*)_pinnedConfigPtr;
+                    int size = sizeof(NativeModConfig);
+                    _nativeConfigPtr = Marshal.AllocHGlobal(size);
+                    byte* pZero = (byte*)_nativeConfigPtr.ToPointer();
+                    for (int i = 0; i < size; i++)
+                    {
+                        pZero[i] = 0;
+                    }
+                    PtrNativeConfig = (NativeModConfig*)_nativeConfigPtr.ToPointer();
                 }
 
-                WriteTrace($"[GENESIS-NATIVE] NativeModConfig allocated and pinned at 0x{_pinnedConfigPtr.ToInt64():X}.");
+                if (PtrNativeConfig != null)
+                {
+                    PtrNativeConfig->ModEnabled = (s_ModEnabled == null || s_ModEnabled.Value) ? 1 : 0;
+                    PtrNativeConfig->MaxItemStacks = 99;
+                    PtrNativeConfig->ConditioningRatio = RcRatio != null ? RcRatio.Value : 1.0f;
+                    PtrNativeConfig->SuppressPenalties = (s_SuppressEquippedPenalties == null || s_SuppressEquippedPenalties.Value) ? 1 : 0;
+                    PtrNativeConfig->DiminishingReturns = (s_DiminishingReturnsEnabled != null && s_DiminishingReturnsEnabled.Value) ? 1 : 0;
+                    PtrNativeConfig->AutoEquipOptimal = 1;
+                    PtrNativeConfig->StashAssistBonus = 2;
+                    PtrNativeConfig->StashAssistBonusCap = CkBonusCap != null ? CkBonusCap.Value : 6;
+                    PtrNativeConfig->SuppressedSkillsMask = s_SuppressedSkillsMask != null ? s_SuppressedSkillsMask.Value : 0UL;
+                }
+
+                WriteTrace($"[GENESIS-NATIVE] NativeModConfig allocated in unmanaged memory at 0x{_nativeConfigPtr.ToInt64():X}.");
             }
             catch (Exception ex)
             {
@@ -313,96 +316,12 @@ namespace ZeroParadesOptimalWardrobe
             }
         }
 
-        public static void InitNativeStringPointers()
-        {
-            try
-            {
-                if (PtrUniqueBis == IntPtr.Zero)
-                    PtrUniqueBis = IL2CPP.ManagedStringToIl2Cpp(" <color=#FFD700>[Optimal: Unique BiS]</color>");
-
-                if (PtrSharedBis == IntPtr.Zero)
-                    PtrSharedBis = IL2CPP.ManagedStringToIl2Cpp(" <color=#00FFFF>[Optimal: Shared BiS]</color>");
-
-                if (PtrCosmetic == IntPtr.Zero)
-                    PtrCosmetic = IL2CPP.ManagedStringToIl2Cpp(" <color=#808080>[Optimal: Cosmetic]</color>");
-
-                if (PtrStashAssist == IntPtr.Zero)
-                    PtrStashAssist = IL2CPP.ManagedStringToIl2Cpp("Optimal Wardrobe (Stash Assist)");
-            }
-            catch (Exception ex)
-            {
-                WriteTrace("InitNativeStringPointers error: " + ex.Message);
-            }
-        }
-
-        public static void InitSyntheticModifier()
-        {
-            if (SyntheticModifier != null && SyntheticModifierPtr != IntPtr.Zero && SyntheticModifier.Pointer != IntPtr.Zero)
-                return;
-
-            try
-            {
-                InitNativeStringPointers();
-                SyntheticModifier = new ChecksActiveModifiersInfoItem();
-                SyntheticModifierPtr = SyntheticModifier.Pointer;
-
-                unsafe
-                {
-                    NativeChecksActiveModifiersInfoItem* pMod = (NativeChecksActiveModifiersInfoItem*)SyntheticModifierPtr;
-                    if (pMod != null)
-                    {
-                        pMod->Explanation = PtrStashAssist;
-                        pMod->Value = 0;
-                    }
-                }
-
-                WriteTrace($"[GENESIS-NATIVE] Instantiated native ChecksActiveModifiersInfoItem at 0x{SyntheticModifierPtr.ToInt64():X}.");
-            }
-            catch (Exception ex)
-            {
-                WriteTrace("InitSyntheticModifier error: " + ex.Message);
-            }
-        }
-
-        public static void EnsureSyncBehaviour()
-        {
-            try
-            {
-                var existing = UnityEngine.Object.FindObjectOfType<WardrobeSyncBehaviour>();
-                if (existing == null)
-                {
-                    if (s_SyncContainer == null)
-                    {
-                        s_SyncContainer = new GameObject("ZeroParadesOptimalWardrobe_Sync");
-                        UnityEngine.Object.DontDestroyOnLoad(s_SyncContainer);
-                        s_SyncContainer.hideFlags = HideFlags.HideAndDontSave;
-                    }
-                    SyncInstance = s_SyncContainer.AddComponent<WardrobeSyncBehaviour>();
-                    WriteTrace("[GENESIS-LIFECYCLE] Re-anchored WardrobeSyncBehaviour into active scene.");
-                }
-                else
-                {
-                    SyncInstance = existing;
-                }
-            }
-            catch { }
-        }
+        // Retained as safe no-ops to preserve public method surface without allocating
+        // unrooted IL2CPP strings or premature native game objects during bootstrap.
+        public static void InitNativeStringPointers() { }
+        public static void InitSyntheticModifier() { }
+        public static void EnsureSyncBehaviour() { }
 
         public static void OnNativeSceneUnloaded(Scene scene) => LifecycleGuard.OnSceneUnloaded(scene);
-    }
-
-    // =========================================================================
-    // WARDROBE SYNC BEHAVIOUR (Engine Update Loop & Lifecycle Ticking)
-    // =========================================================================
-
-    public class WardrobeSyncBehaviour : MonoBehaviour
-    {
-        public WardrobeSyncBehaviour(IntPtr ptr) : base(ptr) { }
-
-        private void Update()
-        {
-            float dt = Time.unscaledDeltaTime;
-            LifecycleGuard.Tick(dt);
-        }
     }
 }
