@@ -1,11 +1,12 @@
 // === FILE: ModSource/Core/LifecycleGuard.cs ===
 // Directive: WARDROBE-02-CLEAN-SLATE-ENGINE-AND-QA
 // Zero-Pollution Scene & LoadingState Air-Gap Lifecycle Guard.
-// Inviolable Law 2: Locks mod evaluation during loading states & menu exit transitions.
-// Inviolable Law 4 (Directive 01): Hooks unfolded GameStateManager methods to disarm ICF folding.
+// Uses pure managed Stopwatch timing instead of an injected MonoBehaviour so
+// ClassInjector is never triggered on Unity 6000.3+ IL2CPP.
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Reflection;
 using HarmonyLib;
 using UnityEngine;
@@ -16,17 +17,44 @@ namespace ZeroParadesOptimalWardrobe.Core
 {
     public static class LifecycleGuard
     {
+        private const float DefaultStartupGraceSeconds = 7.0f;
+        private static readonly Stopwatch s_StartupStopwatch = Stopwatch.StartNew();
+
         public static volatile bool IsEngineInLoadingState = true;
         public static volatile bool IsCheckActive = false;
         public static volatile bool HasEnteredWorldState = false;
-        public static float StartupGraceTimer = 7.0f;
+        public static float StartupGraceTimer = DefaultStartupGraceSeconds;
         public static int SceneTransitionCount = 0;
 
-        public static bool IsStartupGraceActive => StartupGraceTimer > 0f;
+        public static void ResetStartupGrace()
+        {
+            StartupGraceTimer = DefaultStartupGraceSeconds;
+            s_StartupStopwatch.Restart();
+        }
+
+        public static bool IsStartupGraceActive
+        {
+            get
+            {
+                if (StartupGraceTimer <= 0f)
+                {
+                    return false;
+                }
+
+                float elapsed = (float)s_StartupStopwatch.Elapsed.TotalSeconds;
+                if (elapsed >= StartupGraceTimer)
+                {
+                    StartupGraceTimer = 0f;
+                    return false;
+                }
+
+                return true;
+            }
+        }
 
         public static void Tick(float deltaTime)
         {
-            if (StartupGraceTimer > 0f)
+            if (StartupGraceTimer > 0f && deltaTime > 0f)
             {
                 StartupGraceTimer = Math.Max(0f, StartupGraceTimer - deltaTime);
             }
@@ -34,6 +62,11 @@ namespace ZeroParadesOptimalWardrobe.Core
 
         public static bool IsSaveLoadGateOpen()
         {
+            if (Plugin.s_ModEnabled != null && !Plugin.s_ModEnabled.Value)
+            {
+                return false;
+            }
+
             if (IsStartupGraceActive)
             {
                 return false;
@@ -42,7 +75,7 @@ namespace ZeroParadesOptimalWardrobe.Core
             try
             {
                 var lc = UnityEngine.Object.FindObjectOfType<ZAUM.C4.UI.Loading.LoadingUIController>();
-                if (lc != null && lc.gameObject != null && lc.gameObject.activeInHierarchy)
+                if (lc != null && !lc.WasCollected && lc.Pointer != IntPtr.Zero && lc.gameObject != null && lc.gameObject.activeInHierarchy)
                 {
                     IsEngineInLoadingState = true;
                     return false;
@@ -50,19 +83,27 @@ namespace ZeroParadesOptimalWardrobe.Core
             }
             catch { }
 
-            var invMgr = WardrobeConditioningEngine.GetInventoryManager();
-            if (invMgr == null || invMgr.Pointer == IntPtr.Zero || invMgr.WasCollected)
+            C4InventoryManager invMgr = null;
+            try
             {
-                return false;
-            }
-
-            unsafe
-            {
-                NativeC4InventoryManager* pInv = (NativeC4InventoryManager*)invMgr.Pointer;
-                if (pInv == null || pInv->IsInitialized == 0)
+                invMgr = WardrobeConditioningEngine.GetInventoryManager();
+                if (invMgr == null || invMgr.WasCollected || invMgr.Pointer == IntPtr.Zero)
                 {
                     return false;
                 }
+
+                unsafe
+                {
+                    NativeC4InventoryManager* pInv = (NativeC4InventoryManager*)invMgr.Pointer;
+                    if (pInv == null || pInv->IsInitialized == 0)
+                    {
+                        return false;
+                    }
+                }
+            }
+            catch
+            {
+                return false;
             }
 
             IsEngineInLoadingState = false;
@@ -104,6 +145,9 @@ namespace ZeroParadesOptimalWardrobe.Core
     [HarmonyPatch]
     public static class LoadingStateLifecyclePatches
     {
+        [HarmonyPrepare]
+        public static bool Prepare(MethodBase original) => SafeHarmonyPatcher.PrepareMethod(original);
+
         private static Type FindZaumType(string typeName)
         {
             foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
@@ -172,7 +216,9 @@ namespace ZeroParadesOptimalWardrobe.Core
             if (name == "EnterLoadingState" || name == "EnterState")
             {
                 LifecycleGuard.IsEngineInLoadingState = true;
+                LifecycleGuard.IsCheckActive = false;
                 LifecycleGuard.HasEnteredWorldState = false;
+                WardrobeConditioningEngine.OnSceneUnloaded();
             }
             else if (name == "EnterWorldState")
             {
@@ -180,15 +226,14 @@ namespace ZeroParadesOptimalWardrobe.Core
                 LifecycleGuard.HasEnteredWorldState = true;
                 LifecycleGuard.StartupGraceTimer = 0f;
                 WardrobeConditioningEngine.MarkDirty(name);
-                WardrobeConditioningEngine.Evaluate();
             }
             else if (name == "EnterMainMenuState")
             {
                 LifecycleGuard.IsEngineInLoadingState = false;
+                LifecycleGuard.IsCheckActive = false;
                 LifecycleGuard.HasEnteredWorldState = false;
                 LifecycleGuard.StartupGraceTimer = 0f;
-                WardrobeConditioningEngine.MarkDirty(name);
-                WardrobeConditioningEngine.Evaluate();
+                WardrobeConditioningEngine.OnSceneUnloaded();
             }
         }
     }

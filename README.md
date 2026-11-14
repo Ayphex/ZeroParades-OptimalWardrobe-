@@ -12,7 +12,8 @@ An autonomous, modular, and customizable wardrobe conditioning engine and shop a
 
 ## Requirements
 - *Zero Parades: Director's Cut*
-- BepInEx 6 (Unity Mono/IL2CPP build for Unity 6000.3+)
+- BepInEx 6 (Unity IL2CPP x64 build for Unity 6000.3+)
+  - Fully compatible with stock BepInEx 6 Bleeding Edge builds where `UnityLogListening = false` is set in `BepInEx/config/BepInEx.cfg` (uses zero `ClassInjector` / `DelegateSupport` runtime type injection).
 
 ## Building from Source
 1. Clone the repository.

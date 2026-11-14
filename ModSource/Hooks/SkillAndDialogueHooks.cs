@@ -2,10 +2,11 @@
 // Directive: MASTER ARCHITECTURAL DIRECTIVE: OPTIMAL WARDROBE v6.2.0
 // Ephemeral Active Check Injection, Post-Roll History Hover & Zero-Allocation Presenters.
 // Inviolable Law 3: Ephemeral active check injection + post-roll historical deltas in memory.
-// Safe IL2CPP Hooking Law: Never use named or ref/out parameters that violate IL2CPP ABI.
+// Safe IL2CPP Hooking Law: Validated via SafeHarmonyPatcher with zero ClassInjector/DelegateSupport usage.
 
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using HarmonyLib;
 using Il2CppInterop.Runtime;
 using UnityEngine;
@@ -48,19 +49,28 @@ namespace ZeroParadesOptimalWardrobe.Hooks
     }
 
     // =========================================================================
-    // 1. RTWHITECHECKCARD & RTREDCHECKCARD TRYGETACTIVEMODIFIERS PATCHES
+    // 1. RTWHITECHECKCARD TRYGETACTIVEMODIFIERS PATCH
     // =========================================================================
 
     [HarmonyPatch(typeof(RtWhiteCheckCard), nameof(RtWhiteCheckCard.TryGetActiveModifiers))]
     public static class RtWhiteCheckCard_TryGetActiveModifiers_Patch
     {
+        [HarmonyPrepare]
+        public static bool Prepare(MethodBase original) => SafeHarmonyPatcher.PrepareMethod(original);
+
         [HarmonyPostfix]
         public static void Postfix(
             RtWhiteCheckCard __instance,
             ref bool __result,
             ref Il2CppSystem.Collections.Generic.List<ChecksActiveModifiersInfoItem> activeModifiers)
         {
-            if (LifecycleGuard.IsStartupGraceActive || !LifecycleGuard.IsSaveLoadGateOpen() || __instance == null || __instance.Pointer == IntPtr.Zero)
+            if (Plugin.s_ModEnabled != null && !Plugin.s_ModEnabled.Value)
+                return;
+
+            if (Plugin.StashAssistanceEnabled != null && !Plugin.StashAssistanceEnabled.Value)
+                return;
+
+            if (LifecycleGuard.IsStartupGraceActive || !LifecycleGuard.IsSaveLoadGateOpen() || __instance == null || __instance.WasCollected || __instance.Pointer == IntPtr.Zero)
                 return;
 
             try
@@ -95,7 +105,7 @@ namespace ZeroParadesOptimalWardrobe.Hooks
                     for (int i = 0; i < activeModifiers.Count; i++)
                     {
                         var mod = activeModifiers[i];
-                        if (mod != null && mod.Pointer != IntPtr.Zero)
+                        if (mod != null && !mod.WasCollected && mod.Pointer != IntPtr.Zero)
                         {
                             string exp = null;
                             try { exp = mod.Explanation; } catch { }
@@ -151,10 +161,13 @@ namespace ZeroParadesOptimalWardrobe.Hooks
             RtSkillEntity skillEntity,
             ref int modsTotal)
         {
-            if (controller == null || controller.Pointer == IntPtr.Zero) return;
+            if (controller == null || controller.WasCollected || controller.Pointer == IntPtr.Zero) return;
+
+            bool stashAssistEnabled = (Plugin.s_ModEnabled == null || Plugin.s_ModEnabled.Value) &&
+                                      (Plugin.StashAssistanceEnabled == null || Plugin.StashAssistanceEnabled.Value);
 
             string skillId = null;
-            if (skillEntity != null)
+            if (skillEntity != null && !skillEntity.WasCollected)
             {
                 try { skillId = skillEntity.ShortName; } catch { }
                 if (string.IsNullOrEmpty(skillId))
@@ -162,14 +175,14 @@ namespace ZeroParadesOptimalWardrobe.Hooks
                     try { skillId = skillEntity.Name; } catch { }
                 }
             }
-            if (string.IsNullOrEmpty(skillId) && checkCard != null)
+            if (string.IsNullOrEmpty(skillId) && checkCard != null && !checkCard.WasCollected)
             {
                 try { skillId = checkCard.SkillID ?? checkCard.m_skillID; } catch { }
             }
             if (string.IsNullOrEmpty(skillId))
             {
                 var modal = controller.GetComponentInParent<SkillCheckModal>();
-                if (modal != null && modal.m_cachedSkillEntity != null)
+                if (modal != null && !modal.WasCollected && modal.m_cachedSkillEntity != null && !modal.m_cachedSkillEntity.WasCollected)
                 {
                     try { skillId = modal.m_cachedSkillEntity.ShortName ?? modal.m_cachedSkillEntity.Name; } catch { }
                 }
@@ -179,13 +192,16 @@ namespace ZeroParadesOptimalWardrobe.Hooks
             string normSkillId = WardrobeConditioningEngine.NormalizeSkillId(skillId);
 
             int finalDelta = 0;
-            if (checkCard != null && checkCard.Pointer != IntPtr.Zero && SkillAndDialogueHooks.HistoricalRollDeltas.TryGetValue(checkCard.Pointer, out int hDelta) && hDelta > 0)
+            if (stashAssistEnabled)
             {
-                finalDelta = hDelta;
-            }
-            else
-            {
-                finalDelta = WardrobeConditioningEngine.IsSkillSuppressed(normSkillId) ? 0 : WardrobeConditioningEngine.GetFinalSkillDelta(normSkillId);
+                if (checkCard != null && !checkCard.WasCollected && checkCard.Pointer != IntPtr.Zero && SkillAndDialogueHooks.HistoricalRollDeltas.TryGetValue(checkCard.Pointer, out int hDelta) && hDelta > 0)
+                {
+                    finalDelta = hDelta;
+                }
+                else
+                {
+                    finalDelta = WardrobeConditioningEngine.IsSkillSuppressed(normSkillId) ? 0 : WardrobeConditioningEngine.GetFinalSkillDelta(normSkillId);
+                }
             }
 
             string deltaStr = SkillAndDialogueHooks.GetFormattedDelta(finalDelta);
@@ -198,7 +214,7 @@ namespace ZeroParadesOptimalWardrobe.Hooks
                     for (int i = controller.m_activeModifierEntries.Count - 1; i >= 0; i--)
                     {
                         var entry = controller.m_activeModifierEntries[i];
-                        if (entry != null && entry.gameObject != null && (entry.name.Contains("OptimalWardrobe") || (entry.m_modifierDescription != null && entry.m_modifierDescription.Target != null && entry.m_modifierDescription.Target.text != null && entry.m_modifierDescription.Target.text.Contains("Optimal Wardrobe"))))
+                        if (entry != null && !entry.WasCollected && entry.gameObject != null && (entry.name.Contains("OptimalWardrobe") || (entry.m_modifierDescription != null && entry.m_modifierDescription.Target != null && entry.m_modifierDescription.Target.text != null && entry.m_modifierDescription.Target.text.Contains("Optimal Wardrobe"))))
                         {
                             controller.m_activeModifierEntries.RemoveAt(i);
                             UnityEngine.Object.Destroy(entry.gameObject);
@@ -231,7 +247,7 @@ namespace ZeroParadesOptimalWardrobe.Hooks
                 for (int i = 0; i < controller.m_activeModifierEntries.Count; i++)
                 {
                     var entry = controller.m_activeModifierEntries[i];
-                    if (entry != null && entry.m_modifierDescription != null && entry.m_modifierDescription.Target != null)
+                    if (entry != null && !entry.WasCollected && entry.m_modifierDescription != null && entry.m_modifierDescription.Target != null)
                     {
                         string desc = entry.m_modifierDescription.Target.text;
                         if (desc != null && desc.Contains("Optimal Wardrobe"))
@@ -299,7 +315,7 @@ namespace ZeroParadesOptimalWardrobe.Hooks
                 for (int i = 0; i < controller.m_activeModifierEntries.Count; i++)
                 {
                     var e = controller.m_activeModifierEntries[i];
-                    if (e != null && (e.name.Contains("OptimalWardrobe") || (e.m_modifierDescription != null && e.m_modifierDescription.Target != null && e.m_modifierDescription.Target.text != null && e.m_modifierDescription.Target.text.Contains("Optimal Wardrobe"))))
+                    if (e != null && !e.WasCollected && (e.name.Contains("OptimalWardrobe") || (e.m_modifierDescription != null && e.m_modifierDescription.Target != null && e.m_modifierDescription.Target.text != null && e.m_modifierDescription.Target.text.Contains("Optimal Wardrobe"))))
                     {
                         hasVisualEntry = true;
                         break;
@@ -372,6 +388,9 @@ namespace ZeroParadesOptimalWardrobe.Hooks
     [HarmonyPatch(typeof(SkillCheckModifiersController), nameof(SkillCheckModifiersController.Show))]
     public static class SkillCheckModifiersController_Show_Patch
     {
+        [HarmonyPrepare]
+        public static bool Prepare(MethodBase original) => SafeHarmonyPatcher.PrepareMethod(original);
+
         [HarmonyPostfix]
         public static void Postfix(
             SkillCheckModifiersController __instance,
@@ -381,7 +400,7 @@ namespace ZeroParadesOptimalWardrobe.Hooks
             bool isLocked,
             ref int modsTotal)
         {
-            if (LifecycleGuard.IsStartupGraceActive || !LifecycleGuard.IsSaveLoadGateOpen() || __instance == null || __instance.Pointer == IntPtr.Zero)
+            if (LifecycleGuard.IsStartupGraceActive || !LifecycleGuard.IsSaveLoadGateOpen() || __instance == null || __instance.WasCollected || __instance.Pointer == IntPtr.Zero)
                 return;
 
             try
@@ -401,8 +420,8 @@ namespace ZeroParadesOptimalWardrobe.Hooks
             bool isLocked,
             ref int modsTotal)
         {
-            if (LifecycleGuard.IsStartupGraceActive || !LifecycleGuard.IsSaveLoadGateOpen() || __instance == null || __instance.Pointer == IntPtr.Zero)
-                return null;
+            if (LifecycleGuard.IsStartupGraceActive || !LifecycleGuard.IsSaveLoadGateOpen() || __instance == null || __instance.WasCollected || __instance.Pointer == IntPtr.Zero)
+                return __exception;
 
             if (__exception != null)
             {
@@ -419,6 +438,9 @@ namespace ZeroParadesOptimalWardrobe.Hooks
     [HarmonyPatch(typeof(SkillCheckModifiersController), nameof(SkillCheckModifiersController.TrySetModifiers))]
     public static class SkillCheckModifiersController_TrySetModifiers_Patch
     {
+        [HarmonyPrepare]
+        public static bool Prepare(MethodBase original) => SafeHarmonyPatcher.PrepareMethod(original);
+
         [HarmonyPostfix]
         public static void Postfix(
             SkillCheckModifiersController __instance,
@@ -427,7 +449,7 @@ namespace ZeroParadesOptimalWardrobe.Hooks
             bool isLocked,
             ref int totalValue)
         {
-            if (LifecycleGuard.IsStartupGraceActive || !LifecycleGuard.IsSaveLoadGateOpen() || __instance == null || __instance.Pointer == IntPtr.Zero)
+            if (LifecycleGuard.IsStartupGraceActive || !LifecycleGuard.IsSaveLoadGateOpen() || __instance == null || __instance.WasCollected || __instance.Pointer == IntPtr.Zero)
                 return;
 
             try
@@ -446,8 +468,8 @@ namespace ZeroParadesOptimalWardrobe.Hooks
             bool isLocked,
             ref int totalValue)
         {
-            if (LifecycleGuard.IsStartupGraceActive || !LifecycleGuard.IsSaveLoadGateOpen() || __instance == null || __instance.Pointer == IntPtr.Zero)
-                return null;
+            if (LifecycleGuard.IsStartupGraceActive || !LifecycleGuard.IsSaveLoadGateOpen() || __instance == null || __instance.WasCollected || __instance.Pointer == IntPtr.Zero)
+                return __exception;
 
             if (__exception != null)
             {
@@ -468,10 +490,19 @@ namespace ZeroParadesOptimalWardrobe.Hooks
     [HarmonyPatch(typeof(C4SkillManager), nameof(C4SkillManager.ApplyModifierOnSkillValue))]
     public static class SkillManager_ApplyModifierOnSkillValue_Patch
     {
+        [HarmonyPrepare]
+        public static bool Prepare(MethodBase original) => SafeHarmonyPatcher.PrepareMethod(original);
+
         [HarmonyPostfix]
         public static void Postfix(int skillValue, RtSkillEntity skillEntity, int skillInfoArray, bool checkPenalties, ref int __result)
         {
-            if (LifecycleGuard.IsStartupGraceActive || !LifecycleGuard.IsSaveLoadGateOpen() || skillEntity == null)
+            if (Plugin.s_ModEnabled != null && !Plugin.s_ModEnabled.Value)
+                return;
+
+            if (Plugin.StashAssistanceEnabled != null && !Plugin.StashAssistanceEnabled.Value)
+                return;
+
+            if (LifecycleGuard.IsStartupGraceActive || !LifecycleGuard.IsSaveLoadGateOpen() || skillEntity == null || skillEntity.WasCollected)
                 return;
 
             if (LifecycleGuard.IsCheckActive)
@@ -497,13 +528,22 @@ namespace ZeroParadesOptimalWardrobe.Hooks
     [HarmonyPatch(typeof(RtWhiteCheckCard), nameof(RtWhiteCheckCard.PerformDiceRoll))]
     public static class WhiteCheckCard_PerformDiceRoll_Patch
     {
+        [HarmonyPrepare]
+        public static bool Prepare(MethodBase original) => SafeHarmonyPatcher.PrepareMethod(original);
+
         [HarmonyPrefix]
         public static void Prefix(RtWhiteCheckCard __instance)
         {
+            if (Plugin.s_ModEnabled != null && !Plugin.s_ModEnabled.Value)
+                return;
+
+            if (Plugin.StashAssistanceEnabled != null && !Plugin.StashAssistanceEnabled.Value)
+                return;
+
             LifecycleGuard.IsCheckActive = true;
             Plugin.OnCheckStarted();
 
-            if (__instance != null && __instance.Pointer != IntPtr.Zero)
+            if (!LifecycleGuard.IsStartupGraceActive && LifecycleGuard.IsSaveLoadGateOpen() && __instance != null && !__instance.WasCollected && __instance.Pointer != IntPtr.Zero)
             {
                 string skillId = null;
                 try { skillId = __instance.SkillID ?? __instance.m_skillID; } catch { }
@@ -550,6 +590,9 @@ namespace ZeroParadesOptimalWardrobe.Hooks
     [HarmonyPatch(typeof(C4DialogueManager), nameof(C4DialogueManager.FireRedWhiteCheckResult))]
     public static class DialogueManager_FireRedWhiteCheckResult_Patch
     {
+        [HarmonyPrepare]
+        public static bool Prepare(MethodBase original) => SafeHarmonyPatcher.PrepareMethod(original);
+
         [HarmonyPrefix]
         public static bool Prefix()
         {
@@ -567,11 +610,13 @@ namespace ZeroParadesOptimalWardrobe.Hooks
     [HarmonyPatch(typeof(C4DialogueManager), nameof(C4DialogueManager.ResetActiveCheckVariables))]
     public static class DialogueManager_ResetActiveCheckVariables_Patch
     {
+        [HarmonyPrepare]
+        public static bool Prepare(MethodBase original) => SafeHarmonyPatcher.PrepareMethod(original);
+
         [HarmonyPostfix]
         public static void Postfix()
         {
             Plugin.OnCheckFinished();
         }
     }
-
 }
